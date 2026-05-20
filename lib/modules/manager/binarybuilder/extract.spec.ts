@@ -1,5 +1,8 @@
 import { Fixtures } from '~test/fixtures.ts';
+import { fs } from '~test/util.ts';
 import { extractPackageFile } from './extract.ts';
+
+vi.mock('../../../util/fs/index.ts');
 
 const vanilla = Fixtures.get('build_tarballs.jl');
 const githubSources = Fixtures.get('build_tarballs_github.jl');
@@ -7,18 +10,21 @@ const indirect = Fixtures.get('build_tarballs_indirect.jl');
 
 describe('modules/manager/binarybuilder/extract', () => {
   describe('extractPackageFile()', () => {
-    it('returns null for content with no source constructors', () => {
-      expect(extractPackageFile('using BinaryBuilder\n')).toBeNull();
+    it('returns null for content with no source constructors', async () => {
+      expect(await extractPackageFile('using BinaryBuilder\n')).toBeNull();
     });
 
-    it('returns null for indirected recipes the regex cannot follow', () => {
+    it('returns null for indirected recipes the regex cannot follow', async () => {
       expect(
-        extractPackageFile(indirect, 'I/Indirect/build_tarballs.jl'),
+        await extractPackageFile(indirect, 'I/Indirect/build_tarballs.jl'),
       ).toBeNull();
     });
 
-    it('extracts ArchiveSource and GitSource from a vanilla recipe', () => {
-      const res = extractPackageFile(vanilla, 'O/OpenSSL/build_tarballs.jl');
+    it('extracts ArchiveSource and GitSource from a vanilla recipe', async () => {
+      const res = await extractPackageFile(
+        vanilla,
+        'O/OpenSSL/build_tarballs.jl',
+      );
       expect(res).toEqual({
         packageFileVersion: '3.2.0',
         deps: [
@@ -47,8 +53,11 @@ describe('modules/manager/binarybuilder/extract', () => {
       });
     });
 
-    it('classifies GitHub release, GitHub archive, and arbitrary URLs', () => {
-      const res = extractPackageFile(githubSources, 'z/zlib/build_tarballs.jl');
+    it('classifies GitHub release, GitHub archive, and arbitrary URLs', async () => {
+      const res = await extractPackageFile(
+        githubSources,
+        'z/zlib/build_tarballs.jl',
+      );
       expect(res?.packageFileVersion).toBe('1.3.1');
       expect(res?.deps).toEqual([
         {
@@ -103,7 +112,7 @@ describe('modules/manager/binarybuilder/extract', () => {
       ]);
     });
 
-    it('classifies GitLab archive, release, and gitlab.com `.git` URLs', () => {
+    it('classifies GitLab archive, release, and gitlab.com `.git` URLs', async () => {
       const sha = 'a'.repeat(64);
       const sha1 = 'b'.repeat(40);
       const content = [
@@ -115,7 +124,7 @@ describe('modules/manager/binarybuilder/extract', () => {
         `    GitSource("https://gitlab.com/foo/bar.git", "${sha1}"),`,
         ']',
       ].join('\n');
-      const res = extractPackageFile(content);
+      const res = await extractPackageFile(content);
       expect(res?.deps).toEqual([
         {
           depName: 'foo/bar',
@@ -159,7 +168,7 @@ describe('modules/manager/binarybuilder/extract', () => {
       ]);
     });
 
-    it('classifies Codeberg, Gitea, and Bitbucket archive and git URLs', () => {
+    it('classifies Codeberg, Gitea, and Bitbucket archive and git URLs', async () => {
       const sha = 'a'.repeat(64);
       const sha1 = 'b'.repeat(40);
       const content = [
@@ -173,7 +182,7 @@ describe('modules/manager/binarybuilder/extract', () => {
         `    GitSource("https://bitbucket.org/foo/bar.git", "${sha1}"),`,
         ']',
       ].join('\n');
-      const res = extractPackageFile(content);
+      const res = await extractPackageFile(content);
       expect(res?.deps).toEqual([
         {
           depName: 'forgejo/forgejo',
@@ -233,7 +242,7 @@ describe('modules/manager/binarybuilder/extract', () => {
       ]);
     });
 
-    it('maps Azure DevOps SSH URLs (modern and legacy hosts) to azure-tags', () => {
+    it('maps Azure DevOps SSH URLs (modern and legacy hosts) to azure-tags', async () => {
       const sha1 = 'e'.repeat(40);
       const content = [
         'using BinaryBuilder',
@@ -243,7 +252,7 @@ describe('modules/manager/binarybuilder/extract', () => {
         `    GitSource("contoso@vs-ssh.visualstudio.com:v3/contoso/widgets/widgetlib", "${sha1}"),`,
         ']',
       ].join('\n');
-      const res = extractPackageFile(content);
+      const res = await extractPackageFile(content);
       expect(res?.deps).toEqual([
         {
           depName: 'widgets/widgetlib',
@@ -275,7 +284,7 @@ describe('modules/manager/binarybuilder/extract', () => {
       ]);
     });
 
-    it('normalises SSH git URLs to https and re-classifies', () => {
+    it('normalises SSH git URLs to https and re-classifies', async () => {
       const sha1 = 'd'.repeat(40);
       const content = [
         'using BinaryBuilder',
@@ -285,7 +294,7 @@ describe('modules/manager/binarybuilder/extract', () => {
         `    GitSource("git@codeberg.org:forgejo/forgejo", "${sha1}"),`,
         ']',
       ].join('\n');
-      const res = extractPackageFile(content);
+      const res = await extractPackageFile(content);
       expect(res?.deps).toEqual([
         {
           depName: 'openssl/openssl',
@@ -316,7 +325,7 @@ describe('modules/manager/binarybuilder/extract', () => {
       ]);
     });
 
-    it('classifies modern and legacy Azure DevOps Repos URLs', () => {
+    it('classifies modern and legacy Azure DevOps Repos URLs', async () => {
       const sha1 = 'c'.repeat(40);
       const content = [
         'using BinaryBuilder',
@@ -327,7 +336,7 @@ describe('modules/manager/binarybuilder/extract', () => {
         `    GitSource("https://contoso.visualstudio.com/widgets/_git/widgetlib.git", "${sha1}"),`,
         ']',
       ].join('\n');
-      const res = extractPackageFile(content);
+      const res = await extractPackageFile(content);
       expect(res?.deps).toEqual([
         {
           depName: 'widgets/widgetlib',
@@ -368,7 +377,7 @@ describe('modules/manager/binarybuilder/extract', () => {
       ]);
     });
 
-    it('auto-detects self-hosted Gitea and Forgejo via hostname convention', () => {
+    it('auto-detects self-hosted Gitea and Forgejo via hostname convention', async () => {
       const sha = 'a'.repeat(64);
       const sha1 = 'b'.repeat(40);
       const content = [
@@ -380,7 +389,7 @@ describe('modules/manager/binarybuilder/extract', () => {
         `    GitSource("https://forgejo.example.com/foo/bar.git", "${sha1}"),`,
         ']',
       ].join('\n');
-      const res = extractPackageFile(content);
+      const res = await extractPackageFile(content);
       expect(res?.deps).toEqual([
         {
           depName: 'foo/bar',
@@ -423,7 +432,7 @@ describe('modules/manager/binarybuilder/extract', () => {
       ]);
     });
 
-    it('falls back to git-tags for any other `.git` URL', () => {
+    it('falls back to git-tags for any other `.git` URL', async () => {
       const url = 'https://git.savannah.gnu.org/git/coreutils.git';
       const content = [
         'using BinaryBuilder',
@@ -432,7 +441,7 @@ describe('modules/manager/binarybuilder/extract', () => {
         '              "d6e4056805f54bb1cab1d4d6f2b1bf0bb8204bd9"),',
         ']',
       ].join('\n');
-      const res = extractPackageFile(content);
+      const res = await extractPackageFile(content);
       expect(res?.deps).toEqual([
         {
           depName: url,
@@ -448,7 +457,7 @@ describe('modules/manager/binarybuilder/extract', () => {
       ]);
     });
 
-    it('emits unsupported-url for GitSource URLs without a `.git` suffix', () => {
+    it('emits unsupported-url for GitSource URLs without a `.git` suffix', async () => {
       const content = [
         'using BinaryBuilder',
         'sources = [',
@@ -456,7 +465,7 @@ describe('modules/manager/binarybuilder/extract', () => {
         '              "d6e4056805f54bb1cab1d4d6f2b1bf0bb8204bd9"),',
         ']',
       ].join('\n');
-      const res = extractPackageFile(content);
+      const res = await extractPackageFile(content);
       expect(res?.deps).toEqual([
         {
           depName: 'https://example.com/some/repo',
@@ -470,7 +479,7 @@ describe('modules/manager/binarybuilder/extract', () => {
       ]);
     });
 
-    it('accepts SHA1, SHA384, and SHA512 hash lengths for archives', () => {
+    it('accepts SHA1, SHA384, and SHA512 hash lengths for archives', async () => {
       const sha512 = 'a'.repeat(128);
       const content = [
         'using BinaryBuilder',
@@ -482,7 +491,7 @@ describe('modules/manager/binarybuilder/extract', () => {
         `    ArchiveSource("https://github.com/foo/bar/releases/download/v1.2.3/bar.tar.gz", "${sha512}"),`,
         ']',
       ].join('\n');
-      const res = extractPackageFile(content);
+      const res = await extractPackageFile(content);
       expect(res).toEqual({
         packageFileVersion: '1.2.3',
         deps: [
@@ -502,17 +511,17 @@ describe('modules/manager/binarybuilder/extract', () => {
       });
     });
 
-    it('rejects wrong-length hashes on archive sources', () => {
+    it('rejects wrong-length hashes on archive sources', async () => {
       const content = [
         'using BinaryBuilder',
         'sources = [',
         '    ArchiveSource("https://example.com/x.tar.gz", "deadbeef"),',
         ']',
       ].join('\n');
-      expect(extractPackageFile(content)).toBeNull();
+      expect(await extractPackageFile(content)).toBeNull();
     });
 
-    it('rejects non-40-char hashes on git sources', () => {
+    it('rejects non-40-char hashes on git sources', async () => {
       const sha256 = 'b'.repeat(64);
       const content = [
         'using BinaryBuilder',
@@ -520,10 +529,127 @@ describe('modules/manager/binarybuilder/extract', () => {
         `    GitSource("https://github.com/foo/bar.git", "${sha256}"),`,
         ']',
       ].join('\n');
-      expect(extractPackageFile(content)).toBeNull();
+      expect(await extractPackageFile(content)).toBeNull();
     });
 
-    it('omits packageFileVersion when no version literal is present', () => {
+    it('skips include resolution when no packageFile path is known', async () => {
+      // Without a packageFile path, the AST walker cannot resolve the
+      // include() target; the recipe falls back to whatever the regex
+      // could pull out (here, nothing — there are no literal
+      // ArchiveSource calls).
+      const content = [
+        'using BinaryBuilder',
+        'include("../common.jl")',
+        'sources = [',
+        '    ArchiveSource("https://x/$(version).tar.gz", "abc"),',
+        ']',
+      ].join('\n');
+      expect(await extractPackageFile(content)).toBeNull();
+    });
+
+    it('returns null when include() target is missing on disk', async () => {
+      fs.readLocalFile.mockResolvedValueOnce(null);
+      const content = [
+        'using BinaryBuilder',
+        'include("../missing.jl")',
+        'sources = [',
+        '    ArchiveSource("https://x/$(v).tar.gz", "abc"),',
+        ']',
+      ].join('\n');
+      expect(
+        await extractPackageFile(content, 'M/Missing/build_tarballs.jl'),
+      ).toBeNull();
+    });
+
+    it('logs and skips when readLocalFile throws for an include() target', async () => {
+      fs.readLocalFile.mockRejectedValueOnce(
+        new Error('FILE_ACCESS_VIOLATION'),
+      );
+      const content = [
+        'using BinaryBuilder',
+        'include("../../../escape.jl")',
+        'sources = [',
+        '    ArchiveSource("https://x/$(v).tar.gz", "abc"),',
+        ']',
+      ].join('\n');
+      expect(
+        await extractPackageFile(content, 'B/Bad/build_tarballs.jl'),
+      ).toBeNull();
+    });
+
+    it('walks bare expression statements inside an included file', async () => {
+      const sha = '0'.repeat(40);
+      // The included file contains both an assignment and a bare
+      // expression statement that itself is a source-ctor call.
+      const common = [
+        'using BinaryBuilder',
+        `GitSource("https://github.com/owner/repo.git", "${sha}")`,
+      ].join('\n');
+      fs.readLocalFile.mockResolvedValueOnce(common);
+      const content = ['include("../common.jl")', 'sources = []'].join('\n');
+      const res = await extractPackageFile(
+        content,
+        'X/Extras/build_tarballs.jl',
+      );
+      expect(res?.deps).toEqual([
+        {
+          depName: 'owner/repo',
+          packageName: 'owner/repo',
+          datasource: 'github-tags',
+          currentDigest: sha,
+          skipReason: 'unsupported-version',
+          managerData: { hash: sha, sourceType: 'GitSource' },
+        },
+      ]);
+    });
+
+    it('resolves an indirect recipe via include() + versions dict lookup', async () => {
+      // The recipe body refers to bindings defined in ../common.jl;
+      // the AST walker resolves them and reconstructs the source URL
+      // and hash.
+      const sha = 'c'.repeat(64);
+      const common = [
+        'const versions = Dict(',
+        `    "1.83.0" => (source_hash = "${sha}",),`,
+        ')',
+      ].join('\n');
+      fs.readLocalFile.mockResolvedValueOnce(common);
+
+      const content = [
+        'using BinaryBuilder',
+        'include("../common.jl")',
+        'name = "Boost"',
+        'version = v"1.83.0"',
+        'underscore_version = replace(string(version), "." => "_")',
+        'sources = [',
+        '    ArchiveSource(',
+        '        "https://archives.boost.io/release/$(version)/source/boost_$(underscore_version).tar.bz2",',
+        '        versions[string(version)].source_hash,',
+        '    ),',
+        ']',
+      ].join('\n');
+      const res = await extractPackageFile(
+        content,
+        'B/Boost@1.83.0/build_tarballs.jl',
+      );
+      expect(res).toEqual({
+        packageFileVersion: '1.83.0',
+        deps: [
+          {
+            depName:
+              'https://archives.boost.io/release/1.83.0/source/boost_1_83_0.tar.bz2',
+            currentDigest: sha,
+            skipReason: 'unsupported-url',
+            managerData: {
+              hash: sha,
+              sourceType: 'ArchiveSource',
+            },
+          },
+        ],
+      });
+    });
+
+    it('omits packageFileVersion when no version literal is present', async () => {
       const content = [
         'using BinaryBuilder',
         'sources = [',
@@ -531,7 +657,7 @@ describe('modules/manager/binarybuilder/extract', () => {
         '              "d6e4056805f54bb1cab1d4d6f2b1bf0bb8204bd9"),',
         ']',
       ].join('\n');
-      const res = extractPackageFile(content);
+      const res = await extractPackageFile(content);
       expect(res).not.toBeNull();
       expect(res).not.toHaveProperty('packageFileVersion');
     });

@@ -32,7 +32,7 @@ Each extracted dependency carries `currentValue` (the tag or version literal rec
 
 The recipe `version = v"X.Y.Z"` literal is captured as `packageFileVersion` for informational purposes only and is not rewritten when sources change.
 
-Some `build_tarballs.jl` recipes load their sources indirectly via `include("../common.jl")` and a `versions_dict` lookup (the pattern is common for upstream projects with multiple version branches). Static regex extraction cannot follow that indirection, so those recipes yield zero dependencies and remain candidates for a future evaluator-backed extractor.
+Some `build_tarballs.jl` recipes load their sources indirectly via `include("../common.jl")` and a `versions_dict` lookup (the pattern is common for upstream projects with multiple version branches). On top of the regex extractor, a minimal AST walker resolves a useful subset of that indirection: single-level `include()` of a sibling file, literal string and `v"..."` bindings, `Dict(...)` literals with string keys, named-tuple field access, string interpolation, and the `string`/`replace`/`basename` helpers. Recipes whose sources are assembled inside a function body (`sources = build_sources(version)`) are still beyond static analysis and yield zero dependencies until an evaluator-backed extractor can follow that indirection.
 
 ## Customisation with `packageRules`
 

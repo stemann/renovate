@@ -1,5 +1,6 @@
 import { logger } from '../../../logger/index.ts';
 import type { SkipReason } from '../../../types/index.ts';
+import { readLocalFile } from '../../../util/fs/index.ts';
 import { regEx } from '../../../util/regex.ts';
 import { AzureTagsDatasource } from '../../datasource/azure-tags/index.ts';
 import { BitbucketTagsDatasource } from '../../datasource/bitbucket-tags/index.ts';
@@ -11,6 +12,15 @@ import { GithubTagsDatasource } from '../../datasource/github-tags/index.ts';
 import { GitlabReleasesDatasource } from '../../datasource/gitlab-releases/index.ts';
 import { GitlabTagsDatasource } from '../../datasource/gitlab-tags/index.ts';
 import type { PackageDependency, PackageFileContent } from '../types.ts';
+import type { Env, Expr } from './julia.ts';
+import {
+  evaluate,
+  findSourceCalls,
+  parse,
+  processInclude,
+  resolveSourceCall,
+  tokenize,
+} from './julia.ts';
 
 interface BinaryBuilderManagerData {
   hash: string;
@@ -376,67 +386,188 @@ function classifyGitUrl(url: string): UrlClassification {
   return { skipReason: 'unsupported-url' };
 }
 
-export function extractPackageFile(
-  content: string,
-  packageFile?: string,
-): PackageFileContent | null {
-  const sourceCallRegex = regEx(sourceCallPattern, 'g');
-  const deps: PackageDependency<BinaryBuilderManagerData>[] = [];
+interface RawSourceCall {
+  ctor: BinaryBuilderManagerData['sourceType'];
+  url: string;
+  hash: string;
+}
+
+function collectFromRegex(content: string): RawSourceCall[] {
+  const out: RawSourceCall[] = [];
+  const re = regEx(sourceCallPattern, 'g');
   let match: RegExpExecArray | null;
-  while ((match = sourceCallRegex.exec(content)) !== null) {
+  while ((match = re.exec(content)) !== null) {
     /* v8 ignore next 3 -- defensive: named groups are always set */
     if (!match.groups) {
       continue;
     }
-    const { ctor, url, hash } = match.groups;
-    const sourceType = ctor as BinaryBuilderManagerData['sourceType'];
+    out.push({
+      ctor: match.groups.ctor as RawSourceCall['ctor'],
+      url: match.groups.url,
+      hash: match.groups.hash,
+    });
+  }
+  return out;
+}
 
-    if (!isValidHash(hash, sourceType)) {
-      logger.debug(
-        { packageFile, url, hashLength: hash.length, sourceType },
-        'binarybuilder: skipping source with non-hex / wrong-length hash',
-      );
-      continue;
+async function collectFromAst(
+  content: string,
+  packageFile: string | undefined,
+): Promise<RawSourceCall[]> {
+  let stmts;
+  try {
+    stmts = parse(tokenize(content));
+  } catch (err) /* v8 ignore start */ {
+    logger.debug({ err, packageFile }, 'binarybuilder: AST parse failed');
+    return [];
+  } /* v8 ignore stop */
+
+  const env: Env = new Map();
+  const exprs: Expr[] = [];
+
+  for (const stmt of stmts) {
+    if (stmt.kind === 'include') {
+      if (!packageFile) {
+        continue;
+      }
+      const incPath = processInclude(packageFile, stmt.path);
+      let incContent: string | null = null;
+      try {
+        incContent = await readLocalFile(incPath, 'utf8');
+      } catch (err) {
+        logger.debug(
+          { err, packageFile, includePath: stmt.path, resolved: incPath },
+          'binarybuilder: include() target unreadable; skipping',
+        );
+        continue;
+      }
+      if (!incContent) {
+        logger.debug(
+          { packageFile, includePath: stmt.path, resolved: incPath },
+          'binarybuilder: include() target not found; skipping',
+        );
+        continue;
+      }
+      let incStmts;
+      try {
+        incStmts = parse(tokenize(incContent));
+      } catch (err) /* v8 ignore start */ {
+        logger.debug(
+          { err, includePath: incPath },
+          'binarybuilder: include() AST parse failed',
+        );
+        continue;
+      } /* v8 ignore stop */
+      for (const s of incStmts) {
+        if (s.kind === 'assign') {
+          env.set(s.name, evaluate(s.value, env));
+          exprs.push(s.value);
+        } else if (s.kind === 'expr') {
+          exprs.push(s.expr);
+        }
+      }
+    } else if (stmt.kind === 'assign') {
+      env.set(stmt.name, evaluate(stmt.value, env));
+      exprs.push(stmt.value);
+    } else if (stmt.kind === 'expr') {
+      exprs.push(stmt.expr);
     }
+  }
 
-    const managerData: BinaryBuilderManagerData = {
-      hash,
-      sourceType,
-    };
-
-    const classification =
-      sourceType === 'GitSource'
-        ? classifyGitUrl(url)
-        : classifyArchiveOrFileUrl(url);
-
-    if (classification.skipReason) {
-      deps.push({
-        depName: url,
-        currentDigest: hash,
-        skipReason: classification.skipReason,
-        managerData,
-      });
-      continue;
+  const out: RawSourceCall[] = [];
+  for (const expr of exprs) {
+    for (const call of findSourceCalls(expr)) {
+      const resolved = resolveSourceCall(call, env);
+      if (resolved) {
+        out.push({
+          ctor: resolved.ctor,
+          url: resolved.url,
+          hash: resolved.hash,
+        });
+      }
     }
+  }
+  return out;
+}
 
-    const dep: PackageDependency<BinaryBuilderManagerData> = {
-      depName: classification.packageName,
-      packageName: classification.packageName,
-      datasource: classification.datasource,
+function buildDep(
+  call: RawSourceCall,
+  packageFile: string | undefined,
+): PackageDependency<BinaryBuilderManagerData> | null {
+  const { ctor, url, hash } = call;
+  const sourceType: BinaryBuilderManagerData['sourceType'] = ctor;
+
+  if (!isValidHash(hash, sourceType)) {
+    logger.debug(
+      { packageFile, url, hashLength: hash.length, sourceType },
+      'binarybuilder: skipping source with non-hex / wrong-length hash',
+    );
+    return null;
+  }
+
+  const managerData: BinaryBuilderManagerData = { hash, sourceType };
+  const classification =
+    sourceType === 'GitSource'
+      ? classifyGitUrl(url)
+      : classifyArchiveOrFileUrl(url);
+
+  if (classification.skipReason) {
+    return {
+      depName: url,
       currentDigest: hash,
-      // Defer hash-recompute logic to a follow-up PR; until that lands,
-      // surface deps on the Dependency Dashboard without producing
-      // un-applicable update PRs.
-      skipReason: 'unsupported-version',
+      skipReason: classification.skipReason,
       managerData,
     };
-    if (classification.registryUrls) {
-      dep.registryUrls = classification.registryUrls;
+  }
+
+  const dep: PackageDependency<BinaryBuilderManagerData> = {
+    depName: classification.packageName,
+    packageName: classification.packageName,
+    datasource: classification.datasource,
+    currentDigest: hash,
+    // Defer hash-recompute logic to a follow-up PR; until that lands,
+    // surface deps on the Dependency Dashboard without producing
+    // un-applicable update PRs.
+    skipReason: 'unsupported-version',
+    managerData,
+  };
+  if (classification.registryUrls) {
+    dep.registryUrls = classification.registryUrls;
+  }
+  if (classification.currentValue) {
+    dep.currentValue = classification.currentValue;
+  }
+  return dep;
+}
+
+export async function extractPackageFile(
+  content: string,
+  packageFile?: string,
+): Promise<PackageFileContent | null> {
+  // Collect candidate source-ctor calls from two passes: the regex
+  // extractor handles literal `ArchiveSource("url", "hash")` calls; the
+  // AST walker (julia.ts) additionally resolves `include(...)`
+  // indirection and string interpolation against any literal bindings.
+  // Merge by (ctor, url, hash) — the classification pipeline runs once
+  // per unique call. Regex-found calls are inserted first so their order
+  // is preserved for direct recipes.
+  const seen = new Map<string, RawSourceCall>();
+  const insert = (call: RawSourceCall): void => {
+    seen.set(`${call.ctor}\0${call.url}\0${call.hash}`, call);
+  };
+  for (const c of collectFromRegex(content)) {
+    insert(c);
+  }
+  for (const c of await collectFromAst(content, packageFile)) {
+    insert(c);
+  }
+
+  const deps: PackageDependency<BinaryBuilderManagerData>[] = [];
+  for (const call of seen.values()) {
+    const dep = buildDep(call, packageFile);
+    if (dep) {
+      deps.push(dep);
     }
-    if (classification.currentValue) {
-      dep.currentValue = classification.currentValue;
-    }
-    deps.push(dep);
   }
 
   if (deps.length === 0) {
